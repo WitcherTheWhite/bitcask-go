@@ -3,6 +3,12 @@ package bitcask_go
 import (
 	"bitcask-go/data"
 	"bitcask-go/index"
+	"errors"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -10,9 +16,41 @@ import (
 type DB struct {
 	options    Options
 	mu         *sync.RWMutex
+	fileIds    []int                     // 文件 id 列表
 	activeFile *data.DataFile            // 当前活跃数据文件
 	oldFiles   map[uint32]*data.DataFile // 旧的数据文件
 	index      index.Indexer             // 内存索引
+}
+
+// 打开存储引擎实例
+func Open(opts Options) (*DB, error) {
+	if err := checkOptions(opts); err != nil {
+		return nil, err
+	}
+
+	// 数据目录不存在则新建数据目录
+	if _, err := os.Stat(opts.DirPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(opts.DirPath, os.ModePerm); err != nil {
+			return nil, err
+		}
+	}
+
+	db := &DB{
+		options:  opts,
+		mu:       new(sync.RWMutex),
+		oldFiles: make(map[uint32]*data.DataFile),
+		index:    index.NewIndexer(opts.indexType),
+	}
+
+	if err := db.loadDataFiles(); err != nil {
+		return nil, err
+	}
+
+	if err := db.loadIndex(); err != nil {
+		return nil, err
+	}
+
+	return db, nil
 }
 
 // 写入 key/value数据，key 不能为空
@@ -69,7 +107,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		return nil, ErrDataFileNotFound
 	}
 
-	logRecord, err := dataFile.ReadLogRecord(pos.Offset)
+	logRecord, _, err := dataFile.ReadLogRecord(pos.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -139,5 +177,106 @@ func (db *DB) setActiveFile() error {
 		return err
 	}
 	db.activeFile = dataFile
+	return nil
+}
+
+// 校验配置项
+func checkOptions(opts Options) error {
+	if opts.DirPath == "" {
+		return errors.New("dir path is empty")
+	}
+	if opts.DataFileSize <= 0 {
+		return errors.New("datafile size must be positive")
+	}
+	return nil
+}
+
+// 从磁盘中加载数据文件
+func (db *DB) loadDataFiles() error {
+	dirEntries, err := os.ReadDir(db.options.DirPath)
+	if err != nil {
+		return err
+	}
+
+	// 找到所有数据文件 id
+	var fileIds []int
+	for _, dirEntry := range dirEntries {
+		if strings.HasSuffix(dirEntry.Name(), data.DataFileNameSuffix) {
+			splitNames := strings.Split(dirEntry.Name(), " ")
+			fileId, err := strconv.Atoi(splitNames[0])
+			if err != nil {
+				return ErrDataFileCorrupted
+			}
+			fileIds = append(fileIds, fileId)
+		}
+	}
+
+	// 将文件 id 排序，用于之后加载索引
+	sort.Ints(fileIds)
+	db.fileIds = fileIds
+
+	// 打开所有数据文件
+	for i, fileId := range fileIds {
+		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fileId))
+		if err != nil {
+			return err
+		}
+		if i == len(fileIds)-1 {
+			db.activeFile = dataFile
+		} else {
+			db.oldFiles[uint32(fileId)] = dataFile
+		}
+	}
+
+	return nil
+}
+
+// 从数据文件中加载索引
+func (db *DB) loadIndex() error {
+	if len(db.fileIds) == 0 {
+		return nil
+	}
+
+	// 遍历所有数据文件，并把记录加载到索引
+	for _, fid := range db.fileIds {
+		fileId := uint32(fid)
+		var dataFile *data.DataFile
+		if fileId == db.activeFile.FileId {
+			dataFile = db.activeFile
+		} else {
+			dataFile = db.oldFiles[fileId]
+		}
+
+		// 循环读取数据文件中记录
+		var offset uint64
+		for {
+			logRecord, size, err := dataFile.ReadLogRecord(offset)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return err
+			}
+
+			// 更新索引
+			pos := &data.LogRecordPos{
+				Fid:    fileId,
+				Offset: offset,
+			}
+			if logRecord.Type == data.LogRecordDeleted {
+				db.index.Delete(logRecord.Key)
+			} else {
+				db.index.Put(logRecord.Key, pos)
+			}
+
+			offset += size
+		}
+
+		// 如果是活跃文件，更新写入偏移
+		if fileId == db.activeFile.FileId {
+			db.activeFile.WriteOff = offset
+		}
+	}
+
 	return nil
 }

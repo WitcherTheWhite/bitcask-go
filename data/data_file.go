@@ -4,6 +4,8 @@ import (
 	fio "bitcask-go/file_io"
 )
 
+const DataFileNameSuffix string = ".data"
+
 // 数据文件
 type DataFile struct {
 	FileId    uint32        // 文件 id
@@ -27,6 +29,6 @@ func (df *DataFile) Write(bytes []byte) error {
 }
 
 // 在指定位置读取数据记录
-func (df *DataFile) ReadLogRecord(offset uint64) (*LogRecord, error) {
-	return nil, nil
+func (df *DataFile) ReadLogRecord(offset uint64) (*LogRecord, uint64, error) {
+	return nil, 0, nil
 }
