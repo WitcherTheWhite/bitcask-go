@@ -7,7 +7,7 @@ type Options struct {
 	DirPath string
 
 	// 数据文件目标大小
-	DataFileSize uint64
+	DataFileSize int64
 
 	// 是否在每次写入后持久化数据文件
 	SyncWrites bool

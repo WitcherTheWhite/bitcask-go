@@ -11,8 +11,15 @@ type IOManager interface {
 	Write([]byte) (int, error)
 
 	// 持久化数据
-	Sync([]byte) error
+	Sync() error
 
 	// 关闭文件
 	Close() error
+
+	// 获取文件大小
+	Size() (int64, error)
+}
+
+func NewIOManager(fileName string) (IOManager, error) {
+	return NewFileIOManager(fileName)
 }

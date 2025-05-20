@@ -278,7 +278,7 @@ func (db *DB) loadIndex() error {
 		}
 
 		// 循环读取数据文件中记录
-		var offset uint64
+		var offset int64
 		for {
 			logRecord, size, err := dataFile.ReadLogRecord(offset)
 			if err != nil {
