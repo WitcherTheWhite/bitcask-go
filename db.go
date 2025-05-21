@@ -232,7 +232,7 @@ func (db *DB) loadDataFiles() error {
 	var fileIds []int
 	for _, dirEntry := range dirEntries {
 		if strings.HasSuffix(dirEntry.Name(), data.DataFileNameSuffix) {
-			splitNames := strings.Split(dirEntry.Name(), " ")
+			splitNames := strings.Split(dirEntry.Name(), ".")
 			fileId, err := strconv.Atoi(splitNames[0])
 			if err != nil {
 				return ErrDataFileCorrupted
