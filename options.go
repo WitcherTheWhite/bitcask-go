@@ -23,5 +23,18 @@ var DefaultOptions = Options{
 	DirPath:      os.TempDir(),
 	DataFileSize: 256 * 1024 * 1024, // 256MB
 	SyncWrites:   false,
-	indexType:    index.BTree,
+	indexType:    index.Btree,
+}
+
+type IteratorOptions struct {
+	// 遍历前缀值，默认为空
+	Prefix []byte
+
+	// 遍历方向
+	Reverse bool
+}
+
+var DefaultIteratorOptions = IteratorOptions{
+	Prefix:  nil,
+	Reverse: false,
 }
