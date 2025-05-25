@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ type DB struct {
 	oldFiles   map[uint32]*data.DataFile // 旧的数据文件
 	index      index.Indexer             // 内存索引
 	seqNo      uint64                    // 事务序列号
+	isMerging  bool                      // 是否正在 merge
 }
 
 // 打开存储引擎实例
@@ -41,6 +43,14 @@ func Open(opts Options) (*DB, error) {
 		mu:       new(sync.RWMutex),
 		oldFiles: make(map[uint32]*data.DataFile),
 		index:    index.NewIndexer(opts.indexType),
+	}
+
+	if err := db.loadMergeFiles(); err != nil {
+		return nil, err
+	}
+
+	if err := db.loadIndexFromHintFile(); err != nil {
+		return nil, err
 	}
 
 	if err := db.loadDataFiles(); err != nil {
@@ -338,6 +348,17 @@ func (db *DB) loadIndex() error {
 		return nil
 	}
 
+	hasMerge, nonMergeFileId := false, uint32(0)
+	mergeFinFileName := filepath.Join(db.options.DirPath, data.MergeFinFileName)
+	if _, err := os.Stat(mergeFinFileName); err == nil {
+		fid, err := db.getNonMergeFileId(db.options.DirPath)
+		if err != nil {
+			return err
+		}
+		hasMerge = true
+		nonMergeFileId = fid
+	}
+
 	// 暂存事务数据，只有读到 txnFinKey 才更新索引
 	txnRecords := make(map[uint64][]*data.TransactionRecord)
 	maxSeqNo := nonTxnSeqNo
@@ -345,6 +366,12 @@ func (db *DB) loadIndex() error {
 	// 遍历所有数据文件，并把记录加载到索引
 	for _, fid := range db.fileIds {
 		fileId := uint32(fid)
+
+		// 说明已经 merge 过，不需要加载索引
+		if hasMerge && fileId < nonMergeFileId {
+			continue
+		}
+
 		var dataFile *data.DataFile
 		if fileId == db.activeFile.FileId {
 			dataFile = db.activeFile

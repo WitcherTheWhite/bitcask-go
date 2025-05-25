@@ -13,7 +13,11 @@ var (
 	ErrInvalidCRC = errors.New("invalid crc value")
 )
 
-const DataFileNameSuffix string = ".data"
+const (
+	DataFileNameSuffix string = ".data"
+	HintFileName       string = "hint-index"
+	MergeFinFileName   string = "merge-fin"
+)
 
 // 数据文件
 type DataFile struct {
@@ -22,9 +26,7 @@ type DataFile struct {
 	IOManager fio.IOManager // io 读写管理
 }
 
-// 打开新的数据文件
-func OpenDataFile(dirPath string, fileId uint32) (*DataFile, error) {
-	fileName := filepath.Join(dirPath, fmt.Sprintf("%09d", fileId)+DataFileNameSuffix)
+func NewDataFile(fileName string, fileId uint32) (*DataFile, error) {
 	ioManager, err := fio.NewIOManager(fileName)
 	if err != nil {
 		return nil, err
@@ -36,6 +38,27 @@ func OpenDataFile(dirPath string, fileId uint32) (*DataFile, error) {
 		IOManager: ioManager,
 	}
 	return dataFile, nil
+}
+
+func GetDataFileName(dirPath string, fileId uint32) string {
+	return filepath.Join(dirPath, fmt.Sprintf("%09d", fileId)+DataFileNameSuffix)
+}
+
+// 打开新的数据文件
+func OpenDataFile(dirPath string, fileId uint32) (*DataFile, error) {
+	return NewDataFile(GetDataFileName(dirPath, fileId), fileId)
+}
+
+// 打开 hint 索引文件，用于启动时加载索引
+func OpenHintFile(dirPath string) (*DataFile, error) {
+	fileName := filepath.Join(dirPath, HintFileName)
+	return NewDataFile(fileName, 0)
+}
+
+// 标识 merge 完成的文件
+func OpenMergeFinFile(dirPath string) (*DataFile, error) {
+	fileName := filepath.Join(dirPath, MergeFinFileName)
+	return NewDataFile(fileName, 0)
 }
 
 // 在指定位置读取数据记录
@@ -98,6 +121,16 @@ func (df *DataFile) Write(b []byte) error {
 	}
 	df.WriteOff += int64(n)
 	return nil
+}
+
+func (df *DataFile) WriteHintRecord(key []byte, pos *LogRecordPos) error {
+	record := &LogRecord{
+		Key:   key,
+		Value: EncodeLogRecordPos(pos),
+		Type:  LogRecordNormal,
+	}
+	encRecord, _ := EncodeLogRecord(record)
+	return df.Write(encRecord)
 }
 
 // 持久化当前数据文件
