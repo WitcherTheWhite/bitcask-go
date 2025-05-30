@@ -23,7 +23,7 @@ var DefaultOptions = Options{
 	DirPath:      os.TempDir(),
 	DataFileSize: 256 * 1024 * 1024, // 256MB
 	SyncWrites:   false,
-	indexType:    index.Btree,
+	indexType:    index.BTREE,
 }
 
 type IteratorOptions struct {

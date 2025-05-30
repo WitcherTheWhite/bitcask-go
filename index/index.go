@@ -23,25 +23,40 @@ type Indexer interface {
 
 	// 返回迭代器用于有序的遍历所有数据
 	Iterator(reverse bool) Iterator
+
+	// 关闭索引
+	Close() error
 }
 
 type IndexType byte
 
 const (
-	Btree IndexType = iota
+	// b树 索引
+	BTREE IndexType = iota
+
+	// 自适应基数树索引
+	ART
+
+	// b+ 树索引
+	BPTREE
 )
 
 // 初始化内存索引
-func NewIndexer(typ IndexType) Indexer {
+func NewIndexer(typ IndexType, dirPath string, syncWrites bool) Indexer {
 	switch typ {
-	case Btree:
+	case BTREE:
 		return NewBTree()
+	case ART:
+		return NewART()
+	case BPTREE:
+		return NewBPlusTree(dirPath, syncWrites)
 	default:
 		panic("unsupported index type")
 	}
 
 }
 
+// 迭代器元素类型
 type Item struct {
 	key []byte
 	pos *data.LogRecordPos

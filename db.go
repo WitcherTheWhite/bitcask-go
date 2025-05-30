@@ -13,16 +13,20 @@ import (
 	"sync"
 )
 
+const seqNoKey = "seq.no"
+
 // 存储引擎实例
 type DB struct {
-	options    Options
-	mu         *sync.RWMutex
-	fileIds    []int                     // 文件 id 列表
-	activeFile *data.DataFile            // 当前活跃数据文件
-	oldFiles   map[uint32]*data.DataFile // 旧的数据文件
-	index      index.Indexer             // 内存索引
-	seqNo      uint64                    // 事务序列号
-	isMerging  bool                      // 是否正在 merge
+	options         Options
+	mu              *sync.RWMutex
+	fileIds         []int                     // 文件 id 列表
+	activeFile      *data.DataFile            // 当前活跃数据文件
+	oldFiles        map[uint32]*data.DataFile // 旧的数据文件
+	index           index.Indexer             // 内存索引
+	seqNo           uint64                    // 事务序列号
+	isMerging       bool                      // 是否正在 merge
+	seqNoFileExists bool                      // 是否支持事务
+	isInitial       bool                      // 是否第一次初始化该目录
 }
 
 // 打开存储引擎实例
@@ -32,24 +36,30 @@ func Open(opts Options) (*DB, error) {
 	}
 
 	// 数据目录不存在则新建数据目录
+	var isInitial bool
 	if _, err := os.Stat(opts.DirPath); os.IsNotExist(err) {
+		isInitial = true
 		if err := os.MkdirAll(opts.DirPath, os.ModePerm); err != nil {
 			return nil, err
 		}
 	}
+	entries, err := os.ReadDir(opts.DirPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		isInitial = true
+	}
 
 	db := &DB{
-		options:  opts,
-		mu:       new(sync.RWMutex),
-		oldFiles: make(map[uint32]*data.DataFile),
-		index:    index.NewIndexer(opts.indexType),
+		options:   opts,
+		mu:        new(sync.RWMutex),
+		oldFiles:  make(map[uint32]*data.DataFile),
+		index:     index.NewIndexer(opts.indexType, opts.DirPath, opts.SyncWrites),
+		isInitial: isInitial,
 	}
 
 	if err := db.loadMergeFiles(); err != nil {
-		return nil, err
-	}
-
-	if err := db.loadIndexFromHintFile(); err != nil {
 		return nil, err
 	}
 
@@ -57,8 +67,22 @@ func Open(opts Options) (*DB, error) {
 		return nil, err
 	}
 
-	if err := db.loadIndex(); err != nil {
-		return nil, err
+	// b+树索引存储在磁盘上，不需要加载到内存
+	if opts.indexType != index.BPTREE {
+		if err := db.loadIndexFromHintFile(); err != nil {
+			return nil, err
+		}
+
+		if err := db.loadIndex(); err != nil {
+			return nil, err
+		}
+	}
+
+	// 使用b+树做索引时需要加载事务号，因为不会遍历数据文件
+	if opts.indexType == index.BPTREE {
+		if err := db.loadSeqNo(); err != nil {
+			return nil, err
+		}
 	}
 
 	return db, nil
@@ -179,6 +203,24 @@ func (db *DB) Close() error {
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
+
+	// 保存当前事务序列号
+	seqNoFile, err := data.OpenSeqNoFile(db.options.DirPath)
+	if err != nil {
+		return err
+	}
+	record := &data.LogRecord{
+		Key:   []byte(seqNoKey),
+		Value: []byte(strconv.FormatUint(db.seqNo, 10)),
+		Type:  data.LogRecordNormal,
+	}
+	encRecord, _ := data.EncodeLogRecord(record)
+	if err := seqNoFile.Write(encRecord); err != nil {
+		return err
+	}
+	if err := seqNoFile.Sync(); err != nil {
+		return err
+	}
 
 	if err := db.activeFile.Close(); err != nil {
 		return err
@@ -460,4 +502,29 @@ func (db *DB) updateIndex(key []byte, pos *data.LogRecordPos, typ data.LogRecord
 	}
 
 	return nil
+}
+
+func (db *DB) loadSeqNo() error {
+	fileName := filepath.Join(db.options.DirPath, data.SeqNoFileName)
+	if _, err := os.Stat(fileName); os.IsNotExist(err) {
+		return nil
+	}
+
+	seqNoFile, err := data.OpenSeqNoFile(db.options.DirPath)
+	if err != nil {
+		return err
+	}
+	record, _, err := seqNoFile.ReadLogRecord(0)
+	if err != nil {
+		return err
+	}
+	seqNo, err := strconv.ParseUint(string(record.Value), 10, 64)
+	if err != nil {
+		return err
+	}
+
+	db.seqNo = seqNo
+	db.seqNoFileExists = true
+
+	return os.Remove(fileName)
 }

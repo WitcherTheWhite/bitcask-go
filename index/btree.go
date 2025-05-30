@@ -54,6 +54,10 @@ func (bt *BTree) Iterator(reverse bool) Iterator {
 	return NewBTreeIterator(bt.tree, reverse)
 }
 
+func (bt *BTree) Close() error {
+	return nil
+}
+
 // BTree 索引迭代器
 type btreeIterator struct {
 	index   int
@@ -100,27 +104,22 @@ func (it *btreeIterator) Seek(key []byte) {
 	}
 }
 
-// 跳转到下一个 key
 func (it *btreeIterator) Next() {
 	it.index += 1
 }
 
-// 是否有效，即是否已经遍历完了所有的 key，用于退出遍历
 func (it *btreeIterator) Valid() bool {
 	return it.index < len(it.items)
 }
 
-// 当前遍历位置的 Key 数据
 func (it *btreeIterator) Key() []byte {
 	return it.items[it.index].key
 }
 
-// 当前遍历位置的 Value 数据
 func (it *btreeIterator) Value() *data.LogRecordPos {
 	return it.items[it.index].pos
 }
 
-// 关闭迭代器，释放相应资源
 func (it *btreeIterator) Close() {
 	it.items = nil
 }
