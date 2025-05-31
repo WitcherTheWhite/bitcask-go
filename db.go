@@ -2,8 +2,10 @@ package bitcask_go
 
 import (
 	"bitcask-go/data"
+	"bitcask-go/fio"
 	"bitcask-go/index"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,9 +13,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/gofrs/flock"
 )
 
-const seqNoKey = "seq.no"
+const (
+	seqNoKey     = "seq.no"
+	fileLockName = "flock"
+)
 
 // 存储引擎实例
 type DB struct {
@@ -27,6 +34,8 @@ type DB struct {
 	isMerging       bool                      // 是否正在 merge
 	seqNoFileExists bool                      // 是否支持事务
 	isInitial       bool                      // 是否第一次初始化该目录
+	fileLock        *flock.Flock              // 文件锁
+	bytesWrite      uint                      // 累计写入且未持久化数据的大小
 }
 
 // 打开存储引擎实例
@@ -43,6 +52,17 @@ func Open(opts Options) (*DB, error) {
 			return nil, err
 		}
 	}
+
+	// 同一目录只能运行一个存储引擎实例
+	fileLock := flock.New(filepath.Join(opts.DirPath, fileLockName))
+	hold, err := fileLock.TryLock()
+	if err != nil {
+		return nil, err
+	}
+	if !hold {
+		return nil, ErrDatabaseIsUsing
+	}
+
 	entries, err := os.ReadDir(opts.DirPath)
 	if err != nil {
 		return nil, err
@@ -55,8 +75,9 @@ func Open(opts Options) (*DB, error) {
 		options:   opts,
 		mu:        new(sync.RWMutex),
 		oldFiles:  make(map[uint32]*data.DataFile),
-		index:     index.NewIndexer(opts.indexType, opts.DirPath, opts.SyncWrites),
+		index:     index.NewIndexer(opts.IndexType, opts.DirPath, opts.SyncWrites),
 		isInitial: isInitial,
+		fileLock:  fileLock,
 	}
 
 	if err := db.loadMergeFiles(); err != nil {
@@ -68,7 +89,7 @@ func Open(opts Options) (*DB, error) {
 	}
 
 	// b+树索引存储在磁盘上，不需要加载到内存
-	if opts.indexType != index.BPTREE {
+	if opts.IndexType != index.BPTREE {
 		if err := db.loadIndexFromHintFile(); err != nil {
 			return nil, err
 		}
@@ -76,10 +97,14 @@ func Open(opts Options) (*DB, error) {
 		if err := db.loadIndex(); err != nil {
 			return nil, err
 		}
+
+		if db.options.MMapAtStartup {
+			db.resetIOType()
+		}
 	}
 
 	// 使用b+树做索引时需要加载事务号，因为不会遍历数据文件
-	if opts.indexType == index.BPTREE {
+	if opts.IndexType == index.BPTREE {
 		if err := db.loadSeqNo(); err != nil {
 			return nil, err
 		}
@@ -198,6 +223,11 @@ func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
 
 // 关闭数据库
 func (db *DB) Close() error {
+	defer func() {
+		if err := db.fileLock.Unlock(); err != nil {
+			panic(fmt.Sprintf("failed to unlock the directory, %v", err))
+		}
+	}()
 	if db.activeFile == nil {
 		return nil
 	}
@@ -305,9 +335,17 @@ func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, er
 	}
 
 	// 根据用户配置决定是否持久化
-	if db.options.SyncWrites {
+	db.bytesWrite += uint(size)
+	var needSync = db.options.SyncWrites
+	if !needSync && db.options.BytesPerSync > 0 && db.bytesWrite >= db.options.BytesPerSync {
+		needSync = true
+	}
+	if needSync {
 		if err := db.activeFile.Sync(); err != nil {
 			return nil, err
+		}
+		if db.bytesWrite > 0 {
+			db.bytesWrite = 0
 		}
 	}
 
@@ -325,7 +363,7 @@ func (db *DB) setActiveFile() error {
 		fileId = db.activeFile.FileId + 1
 	}
 
-	dataFile, err := data.OpenDataFile(db.options.DirPath, fileId)
+	dataFile, err := data.OpenDataFile(db.options.DirPath, fileId, fio.StandardIO)
 	if err != nil {
 		return err
 	}
@@ -370,7 +408,11 @@ func (db *DB) loadDataFiles() error {
 
 	// 打开所有数据文件
 	for i, fileId := range fileIds {
-		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fileId))
+		ioType := fio.StandardIO
+		if db.options.MMapAtStartup {
+			ioType = fio.MemoryMap
+		}
+		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fileId), ioType)
 		if err != nil {
 			return err
 		}
@@ -527,4 +569,21 @@ func (db *DB) loadSeqNo() error {
 	db.seqNoFileExists = true
 
 	return os.Remove(fileName)
+}
+
+// 将文件 IO 类型重置为标准文件 IO
+func (db *DB) resetIOType() error {
+	if db.activeFile == nil {
+		return nil
+	}
+
+	if err := db.activeFile.SetIOManager(db.options.DirPath, fio.StandardIO); err != nil {
+		return err
+	}
+	for _, dataFile := range db.oldFiles {
+		if err := dataFile.SetIOManager(db.options.DirPath, fio.StandardIO); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -1,7 +1,7 @@
 package data
 
 import (
-	fio "bitcask-go/file_io"
+	"bitcask-go/fio"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -27,8 +27,8 @@ type DataFile struct {
 	IOManager fio.IOManager // io 读写管理
 }
 
-func NewDataFile(fileName string, fileId uint32) (*DataFile, error) {
-	ioManager, err := fio.NewIOManager(fileName)
+func newDataFile(fileName string, fileId uint32, ioType fio.FileIOType) (*DataFile, error) {
+	ioManager, err := fio.NewIOManager(fileName, ioType)
 	if err != nil {
 		return nil, err
 	}
@@ -46,26 +46,26 @@ func GetDataFileName(dirPath string, fileId uint32) string {
 }
 
 // 打开新的数据文件
-func OpenDataFile(dirPath string, fileId uint32) (*DataFile, error) {
-	return NewDataFile(GetDataFileName(dirPath, fileId), fileId)
+func OpenDataFile(dirPath string, fileId uint32, ioType fio.FileIOType) (*DataFile, error) {
+	return newDataFile(GetDataFileName(dirPath, fileId), fileId, ioType)
 }
 
 // 打开 hint 索引文件，用于启动时加载索引
 func OpenHintFile(dirPath string) (*DataFile, error) {
 	fileName := filepath.Join(dirPath, HintFileName)
-	return NewDataFile(fileName, 0)
+	return newDataFile(fileName, 0, fio.StandardIO)
 }
 
 // 标识 merge 完成的文件
 func OpenMergeFinFile(dirPath string) (*DataFile, error) {
 	fileName := filepath.Join(dirPath, MergeFinFileName)
-	return NewDataFile(fileName, 0)
+	return newDataFile(fileName, 0, fio.StandardIO)
 }
 
 // 保存当前事务序列号
 func OpenSeqNoFile(dirPath string) (*DataFile, error) {
 	fileName := filepath.Join(dirPath, SeqNoFileName)
-	return NewDataFile(fileName, 0)
+	return newDataFile(fileName, 0, fio.StandardIO)
 }
 
 // 在指定位置读取数据记录
@@ -148,6 +148,18 @@ func (df *DataFile) Sync() error {
 // 关闭当前数据文件
 func (df *DataFile) Close() error {
 	return df.IOManager.Close()
+}
+
+func (df *DataFile) SetIOManager(dirPath string, ioType fio.FileIOType) error {
+	if err := df.IOManager.Close(); err != nil {
+		return err
+	}
+	ioManager, err := fio.NewIOManager(GetDataFileName(dirPath, df.FileId), ioType)
+	if err != nil {
+		return err
+	}
+	df.IOManager = ioManager
+	return nil
 }
 
 func (df *DataFile) readNBytes(n int64, offset int64) ([]byte, error) {

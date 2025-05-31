@@ -16,14 +16,22 @@ type Options struct {
 	SyncWrites bool
 
 	// 内存索引类型
-	indexType index.IndexType
+	IndexType index.IndexType
+
+	// 累计写到阈值后持久化
+	BytesPerSync uint
+
+	// 是否在启动时使用 mmap 优化
+	MMapAtStartup bool
 }
 
 var DefaultOptions = Options{
-	DirPath:      os.TempDir(),
-	DataFileSize: 256 * 1024 * 1024, // 256MB
-	SyncWrites:   false,
-	indexType:    index.BTREE,
+	DirPath:       os.TempDir(),
+	DataFileSize:  256 * 1024 * 1024, // 256MB
+	SyncWrites:    false,
+	IndexType:     index.BTREE,
+	BytesPerSync:  0,
+	MMapAtStartup: true,
 }
 
 type IteratorOptions struct {
