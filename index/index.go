@@ -10,13 +10,13 @@ import (
 // 抽象索引接口，可以支持不同的数据结构
 type Indexer interface {
 	// 在索引中存储 key 对应的数据位置信息
-	Put(key []byte, pos *data.LogRecordPos) bool
+	Put(key []byte, pos *data.LogRecordPos) *data.LogRecordPos
 
 	// 根据 key 获取对应的数据位置信息
 	Get(key []byte) *data.LogRecordPos
 
 	// 根据 key 删除对应的数据位置信息
-	Delete(key []byte) bool
+	Delete(key []byte) (*data.LogRecordPos, bool)
 
 	// 索引中 key 的数量
 	Size() int

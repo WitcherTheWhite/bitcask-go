@@ -36,6 +36,7 @@ type logRecordHeader struct {
 type LogRecordPos struct {
 	Fid    uint32 // 文件 id
 	Offset int64  // 数据在文件中的位置
+	Size   uint32 // 数据在磁盘上的大小
 }
 
 // 用于事务更新索引时暂存数据信息
@@ -113,10 +114,11 @@ func getLogRecordCRC(lr *LogRecord, header []byte) uint32 {
 
 // 对位置信息进行编码
 func EncodeLogRecordPos(pos *LogRecordPos) []byte {
-	b := make([]byte, binary.MaxVarintLen32+binary.MaxVarintLen64)
+	b := make([]byte, binary.MaxVarintLen32*2+binary.MaxVarintLen64)
 	index := 0
 	index += binary.PutVarint(b[index:], int64(pos.Fid))
 	index += binary.PutVarint(b[index:], pos.Offset)
+	index += binary.PutVarint(b[index:], int64(pos.Size))
 	return b[:index]
 }
 
@@ -125,9 +127,12 @@ func DecodeLogRecordPos(b []byte) *LogRecordPos {
 	index := 0
 	fileId, n := binary.Varint(b[index:])
 	index += n
-	offset, _ := binary.Varint(b[index:])
+	offset, n := binary.Varint(b[index:])
+	index += n
+	size, _ := binary.Varint(b[index:])
 	return &LogRecordPos{
 		Fid:    uint32(fileId),
 		Offset: offset,
+		Size:   uint32(size),
 	}
 }
