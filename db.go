@@ -312,6 +312,13 @@ func (db *DB) Stat() *Stat {
 	}
 }
 
+// 备份数据库，将数据文件拷贝到新目录
+func (db *DB) Backup(dir string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return utils.CopyDir(db.options.DirPath, dir, []string{fileLockName})
+}
+
 // 根据数据位置信息读取 value 值
 func (db *DB) getValueByPosition(pos *data.LogRecordPos) ([]byte, error) {
 	// 获取 key 所在的数据文件
