@@ -129,7 +129,6 @@ func (rds *RedisDataStructure) HGet(key, field []byte) ([]byte, error) {
 		return nil, bitcask.ErrKeyNotFound
 	}
 
-	// Hash 数据的 key 由实际的 key + 版本号 + 字段名组成
 	hk := &hashInternalKey{
 		key:     key,
 		version: meta.version,
@@ -149,7 +148,6 @@ func (rds *RedisDataStructure) HDel(key, field []byte) (bool, error) {
 		return false, nil
 	}
 
-	// Hash 数据的 key 由实际的 key + 版本号 + 字段名组成
 	hk := &hashInternalKey{
 		key:     key,
 		version: meta.version,
@@ -213,4 +211,103 @@ func (rds *RedisDataStructure) findMetadata(key []byte, dataType redisDataType) 
 	}
 
 	return meta, nil
+}
+
+// ======================= Set 数据结构 =======================
+
+func (rds *RedisDataStructure) SAdd(key, member []byte) (bool, error) {
+	meta, err := rds.findMetadata(key, Set)
+	if err != nil {
+		return false, err
+	}
+
+	sk := &setInternalKey{
+		key:     key,
+		version: meta.version,
+		member:  member,
+	}
+	encKey := sk.encode()
+
+	// 不存在则更新
+	var ok bool
+	if _, err := rds.db.Get(encKey); err == bitcask.ErrKeyNotFound {
+		wb := rds.db.NewWriteBatch(bitcask.DefaultWriteBatchOptions)
+		meta.size++
+		if err = wb.Put(key, meta.encode()); err != nil {
+			return false, err
+		}
+		if err = wb.Put(encKey, nil); err != nil {
+			return false, err
+		}
+		if err = wb.Commit(); err != nil {
+			return false, err
+		}
+		ok = true
+	}
+
+	return ok, nil
+}
+
+func (rds *RedisDataStructure) SIsMember(key, member []byte) (bool, error) {
+	meta, err := rds.findMetadata(key, Set)
+	if err != nil {
+		return false, err
+	}
+	if meta.size == 0 {
+		return false, nil
+	}
+
+	sk := &setInternalKey{
+		key:     key,
+		version: meta.version,
+		member:  member,
+	}
+	encKey := sk.encode()
+
+	_, err = rds.db.Get(encKey)
+	if err != nil && err != bitcask.ErrKeyNotFound {
+		return false, err
+	}
+	if err == bitcask.ErrKeyNotFound {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (rds *RedisDataStructure) SRem(key, member []byte) (bool, error) {
+	meta, err := rds.findMetadata(key, Set)
+	if err != nil {
+		return false, err
+	}
+
+	sk := &setInternalKey{
+		key:     key,
+		version: meta.version,
+		member:  member,
+	}
+	encKey := sk.encode()
+
+	_, err = rds.db.Get(encKey)
+	if err != nil && err != bitcask.ErrKeyNotFound {
+		return false, err
+	}
+	if err == bitcask.ErrKeyNotFound {
+		return false, nil
+	}
+
+	// 删除成员并更新元数据
+	wb := rds.db.NewWriteBatch(bitcask.DefaultWriteBatchOptions)
+	if err := wb.Delete(encKey); err != nil {
+		return false, err
+	}
+	meta.size--
+	if err := wb.Put(key, meta.encode()); err != nil {
+		return false, err
+	}
+	if err := wb.Commit(); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
